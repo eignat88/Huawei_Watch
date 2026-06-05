@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Huawei GT 5 Pro 46 mm watch face draft.
+  This file is a starter template for import/rebuild workflows. GT 5 Pro may use
+  a newer package schema than older Huawei GT/GT2 examples from legacy guides.
+-->
+<watchfaceDescription>
+  <name>huawei_gt5pro_hugo_style</name>
+  <displayName>GT5 Pro HUGO Style</displayName>
+  <version>0.1.0</version>
+  <author>eignat88</author>
+  <device>HUAWEI Watch GT 5 Pro 46 mm</device>
+  <screen shape="round" width="466" height="466" />
+  <preview>
+    <cover>preview/cover.jpg</cover>
+    <iconSmall>preview/icon_small.jpg</iconSmall>
+  </preview>
+  <entry>watchface/watch_face_config.xml</entry>
+</watchfaceDescription>
