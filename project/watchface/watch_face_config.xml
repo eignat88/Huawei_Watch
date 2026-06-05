@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Minimal analog watch face configuration draft for 466x466 round screen.
+  Validate and adapt this XML in the selected builder because GT 5 Pro package
+  requirements may differ from older Huawei Watch Face Development Guide schemas.
+-->
+<watchFaceConfig width="466" height="466" shape="round">
+  <resources>
+    <image id="background" path="res/background.png" width="466" height="466" />
+  </resources>
+
+  <layout>
+    <background image="background" x="0" y="0" />
+    <analog centerX="233" centerY="233">
+      <hourHand color="#969696" length="86" width="10" />
+      <minuteHand color="#D21826" length="142" width="6" />
+      <secondHand color="#D21826" length="172" width="2" />
+      <pin color="#D21826" radius="5" />
+    </analog>
+  </layout>
+</watchFaceConfig>
