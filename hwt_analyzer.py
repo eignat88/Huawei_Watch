@@ -16,7 +16,9 @@ from tkinter import filedialog, messagebox
 from PIL import Image
 
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
-CONFIG_EXT = {".xml", ".json", ".ini", ".txt"}
+CONFIG_EXT = {".xml", ".json", ".ini", ".txt", ".watch"}
+ZIP_SIGNATURE = b"PK\x03\x04"
+MAX_NESTED_ARCHIVE_DEPTH = 3
 
 HAND_KEYWORDS = {
     "hour": ["hour", "hours", "h_", "_h", "shi", "时", "hh"],
@@ -90,6 +92,7 @@ HAND_LAYER_SEARCH_KEYWORDS = [
     "second",
     "minute",
     "hour",
+    "selected res",
 ]
 
 HAND_LAYER_SEARCH_ENCODINGS = [
@@ -153,8 +156,68 @@ def _safe_extract(archive: zipfile.ZipFile, output_dir: Path) -> None:
     archive.extractall(output_dir)
 
 
+def is_zip_file(file_path: Path) -> bool:
+    """Return whether a file starts with a ZIP local-file header signature."""
+    try:
+        with open(file_path, "rb") as file:
+            return file.read(4) == ZIP_SIGNATURE
+    except Exception:
+        return False
+
+
+def unpack_zip_file(zip_path: Path, output_dir: Path) -> None:
+    """Safely extract a ZIP-compatible archive to the requested output folder."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    with zipfile.ZipFile(zip_path, "r") as archive:
+        _safe_extract(archive, output_dir)
+
+
+def unpack_nested_archives(output_dir: Path, max_depth: int = MAX_NESTED_ARCHIVE_DEPTH) -> list[Path]:
+    """Extract nested ZIP-compatible files such as ``com.huawei.watchface``.
+
+    Huawei ``.hwt`` packages can contain a second archive without a ``.zip``
+    extension. Extracting it into ``<archive_name>_unpacked`` exposes the real
+    ``watchface/res`` resources for image and coordinate analysis.
+    """
+    extracted_dirs: list[Path] = []
+    processed_archives: set[Path] = set()
+
+    for _depth in range(max_depth):
+        nested_archives = [
+            file_path
+            for file_path in output_dir.rglob("*")
+            if file_path.is_file()
+            and file_path.resolve() not in processed_archives
+            and is_zip_file(file_path)
+        ]
+
+        if not nested_archives:
+            break
+
+        for nested_archive in nested_archives:
+            processed_archives.add(nested_archive.resolve())
+            nested_output = nested_archive.with_name(nested_archive.name + "_unpacked")
+
+            if nested_output.exists():
+                shutil.rmtree(nested_output)
+
+            try:
+                unpack_zip_file(nested_archive, nested_output)
+            except zipfile.BadZipFile:
+                if nested_output.exists():
+                    shutil.rmtree(nested_output)
+                print(f"Не удалось распаковать вложенный архив {nested_archive}: файл не является ZIP")
+                continue
+
+            extracted_dirs.append(nested_output)
+            print(f"Распакован вложенный архив: {nested_archive}")
+
+    return extracted_dirs
+
+
 def unpack_hwt(hwt_path: Path) -> Path:
-    """Unpack a .hwt archive next to the original file."""
+    """Unpack a .hwt archive and ZIP-like nested watch-face archives."""
     output_dir = hwt_path.with_name(hwt_path.stem + "_unpacked")
 
     if output_dir.exists():
@@ -162,8 +225,8 @@ def unpack_hwt(hwt_path: Path) -> Path:
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    with zipfile.ZipFile(hwt_path, "r") as archive:
-        _safe_extract(archive, output_dir)
+    unpack_zip_file(hwt_path, output_dir)
+    unpack_nested_archives(output_dir)
 
     return output_dir
 
@@ -180,6 +243,7 @@ def read_image_info(image_path: Path) -> dict[str, str | int]:
 def detect_role_by_name(file_name: str, width: int | None = None, height: int | None = None) -> str:
     """Guess an image role from path keywords and dimensions."""
     name = file_name.lower()
+    basename = Path(file_name.replace("\\", "/")).name.lower()
 
     for role, keywords in HAND_KEYWORDS.items():
         for keyword in keywords:
@@ -192,15 +256,15 @@ def detect_role_by_name(file_name: str, width: int | None = None, height: int | 
                     return "second_hand"
 
     for keyword in BACKGROUND_KEYWORDS:
-        if keyword in name:
+        if keyword in basename:
             return "dial_or_background"
 
     if width and height:
-        if width >= 300 and height >= 300:
-            return "possible_dial_or_background"
+        if width >= 400 and height >= 400:
+            return "possible_full_size_resource"
 
         if height >= width * 3:
-            return "possible_hand"
+            return "possible_vertical_hand"
 
         if width >= height * 3:
             return "possible_horizontal_hand"
@@ -217,7 +281,18 @@ def find_config_files(unpacked_dir: Path) -> list[Path]:
     ]
 
 
-def parse_xml_for_positions(xml_path: Path) -> list[dict[str, Any]]:
+def relative_or_name(file_path: Path, root_dir: Path | None = None) -> str:
+    """Return a stable report path relative to the unpacked project when possible."""
+    if root_dir is None:
+        return file_path.name
+
+    try:
+        return str(file_path.relative_to(root_dir))
+    except ValueError:
+        return file_path.name
+
+
+def parse_xml_for_positions(xml_path: Path, root_dir: Path | None = None) -> list[dict[str, Any]]:
     """Extract image references and coordinates from XML attributes."""
     result: list[dict[str, Any]] = []
 
@@ -234,7 +309,7 @@ def parse_xml_for_positions(xml_path: Path) -> list[dict[str, Any]]:
             continue
 
         row: dict[str, Any] = {
-            "config_file": str(xml_path.name),
+            "config_file": relative_or_name(xml_path, root_dir),
             "element": elem.tag,
             "raw_attributes": str(attrs),
             "image_ref": "",
@@ -278,7 +353,7 @@ def _first_value(obj: dict[Any, Any], keys: dict[str, Any], candidates: list[str
     return ""
 
 
-def parse_json_for_positions(json_path: Path) -> list[dict[str, Any]]:
+def parse_json_for_positions(json_path: Path, root_dir: Path | None = None) -> list[dict[str, Any]]:
     """Extract image references and coordinates from JSON objects."""
     result: list[dict[str, Any]] = []
 
@@ -321,7 +396,7 @@ def parse_json_for_positions(json_path: Path) -> list[dict[str, Any]]:
             if image_key or has_position:
                 result.append(
                     {
-                        "config_file": json_path.name,
+                        "config_file": relative_or_name(json_path, root_dir),
                         "element": parent_key,
                         "raw_attributes": str(obj),
                         "image_ref": str(obj.get(image_key, "")) if image_key else "",
@@ -468,7 +543,7 @@ def merge_positions_into_images(
             if not image_ref:
                 continue
 
-            image_ref_name = Path(image_ref).name
+            image_ref_name = Path(image_ref).name.lower()
             if image_ref in source_name or image_ref_name in source_name or image_ref_name in saved_name:
                 image_row["x"] = pos.get("x", "")
                 image_row["y"] = pos.get("y", "")
@@ -514,9 +589,9 @@ def analyze_hwt(hwt_path: Path) -> dict[str, Any]:
         suffix = config_file.suffix.lower()
 
         if suffix == ".xml":
-            position_rows.extend(parse_xml_for_positions(config_file))
+            position_rows.extend(parse_xml_for_positions(config_file, unpacked_dir))
         elif suffix == ".json":
-            position_rows.extend(parse_json_for_positions(config_file))
+            position_rows.extend(parse_json_for_positions(config_file, unpacked_dir))
 
     merged_rows = merge_positions_into_images(image_rows, position_rows)
     hand_search_rows = search_hand_layers_in_files(unpacked_dir)
