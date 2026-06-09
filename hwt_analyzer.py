@@ -75,6 +75,40 @@ POSITION_REPORT_FIELDS = [
 ]
 
 
+HAND_LAYER_SEARCH_KEYWORDS = [
+    "Hand Res",
+    "HandRes",
+    "Second Ratio",
+    "Minute Ratio",
+    "Hour 12 Ratio",
+    "Hour Ratio",
+    "Rotate Point",
+    "HandRes Position",
+    "SecondRatio",
+    "MinuteRatio",
+    "Hour12Ratio",
+    "second",
+    "minute",
+    "hour",
+]
+
+HAND_LAYER_SEARCH_ENCODINGS = [
+    "utf-8",
+    "utf-8-sig",
+    "utf-16",
+    "utf-16-le",
+    "utf-16-be",
+    "gbk",
+    "latin-1",
+]
+
+HAND_LAYER_REPORT_FIELDS = [
+    "file",
+    "found_keywords",
+    "preview",
+]
+
+
 def safe_filename(name: str) -> str:
     """Return a filesystem-safe flat filename for an archive-relative path."""
     return (
@@ -312,6 +346,60 @@ def parse_json_for_positions(json_path: Path) -> list[dict[str, Any]]:
     return result
 
 
+def search_hand_layers_in_files(unpacked_dir: Path) -> list[dict[str, str]]:
+    """Search every non-image project file for Huawei hand-layer marker text."""
+    result: list[dict[str, str]] = []
+
+    for file_path in unpacked_dir.rglob("*"):
+        if not file_path.is_file():
+            continue
+
+        if file_path.suffix.lower() in IMAGE_EXT:
+            continue
+
+        try:
+            data = file_path.read_bytes()
+        except Exception:
+            continue
+
+        text = None
+        for encoding in HAND_LAYER_SEARCH_ENCODINGS:
+            try:
+                text = data.decode(encoding, errors="ignore")
+                break
+            except Exception:
+                continue
+
+        if not text:
+            continue
+
+        text_lower = text.lower()
+        found = [
+            keyword
+            for keyword in HAND_LAYER_SEARCH_KEYWORDS
+            if keyword.lower() in text_lower
+        ]
+
+        if found:
+            result.append(
+                {
+                    "file": str(file_path.relative_to(unpacked_dir)),
+                    "found_keywords": ", ".join(found),
+                    "preview": text[:1000].replace("\n", " ").replace("\r", " "),
+                }
+            )
+
+    return result
+
+
+def save_hand_search_report(rows: list[dict[str, str]], output_file: Path) -> None:
+    """Save hand-layer text search matches to a dedicated CSV report."""
+    with open(output_file, "w", newline="", encoding="utf-8-sig") as file:
+        writer = csv.DictWriter(file, fieldnames=HAND_LAYER_REPORT_FIELDS)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 def collect_images(unpacked_dir: Path) -> tuple[list[dict[str, Any]], Path]:
     """Copy images to a flat output folder and build image-report rows."""
     rows: list[dict[str, Any]] = []
@@ -431,21 +519,26 @@ def analyze_hwt(hwt_path: Path) -> dict[str, Any]:
             position_rows.extend(parse_json_for_positions(config_file))
 
     merged_rows = merge_positions_into_images(image_rows, position_rows)
+    hand_search_rows = search_hand_layers_in_files(unpacked_dir)
 
     report_file = unpacked_dir / "hwt_analysis_report.csv"
     positions_file = unpacked_dir / "hwt_positions_report.csv"
+    hand_search_file = unpacked_dir / "hwt_hand_layers_search.csv"
 
     save_csv(merged_rows, report_file)
     save_positions_csv(position_rows, positions_file)
+    save_hand_search_report(hand_search_rows, hand_search_file)
 
     return {
         "unpacked_dir": unpacked_dir,
         "images_dir": images_dir,
         "report_file": report_file,
         "positions_file": positions_file,
+        "hand_search_file": hand_search_file,
         "images_count": len(image_rows),
         "configs_count": len(config_files),
         "positions_count": len(position_rows),
+        "hand_search_count": len(hand_search_rows),
     }
 
 
@@ -463,11 +556,13 @@ def main() -> int:
             "Анализ HWT завершён.\n\n"
             f"Картинок найдено: {result['images_count']}\n"
             f"Конфигов найдено: {result['configs_count']}\n"
-            f"Элементов с координатами найдено: {result['positions_count']}\n\n"
+            f"Элементов с координатами найдено: {result['positions_count']}\n"
+            f"Файлов с признаками стрелок найдено: {result['hand_search_count']}\n\n"
             f"Распакованный проект:\n{result['unpacked_dir']}\n\n"
             f"Картинки:\n{result['images_dir']}\n\n"
             f"Основной отчёт:\n{result['report_file']}\n\n"
-            f"Отчёт по координатам:\n{result['positions_file']}",
+            f"Отчёт по координатам:\n{result['positions_file']}\n\n"
+            f"Поиск слоёв стрелок:\n{result['hand_search_file']}",
         )
 
     except zipfile.BadZipFile:
